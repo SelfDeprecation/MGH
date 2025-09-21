@@ -1,8 +1,6 @@
-import typing
-
 from fastapi import FastAPI
 
-import schemas
+from api import schemas
 
 app = FastAPI(title='X5 entity allocator')
 
