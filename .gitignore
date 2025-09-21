@@ -1,0 +1,8 @@
+# created by virtualenv automatically
+__pycache__/ *.py[cod]
+venv/ .env
+.coverage *.py,cover .cache/
+dist/ *.egg-info/
+*.py,cover
+*.pyc
+**/__pycache__/
