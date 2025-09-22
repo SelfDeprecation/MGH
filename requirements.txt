@@ -1,0 +1,13 @@
+transformers>=4.30.0
+datasets>=2.12.0
+torch>=2.0.0
+accelerate
+sentencepiece
+fastapi
+uvicorn[standard]
+pandas
+scikit-learn
+python-multipart
+pydantic
+tqdm
+seqeval==1.2.2
