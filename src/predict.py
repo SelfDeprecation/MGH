@@ -1,52 +1,104 @@
-import typing
-import pandas as pd
+import re
 import torch
+import pandas as pd
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 
-from configs import config
 
-LABELS = ["O", "B-TYPE", "I-TYPE", "B-BRAND", "I-BRAND", "B-VOLUME", "I-VOLUME", "B-PERCENT", "I-PERCENT"]
+def predict_sentence(sentence: str,
+                     model: AutoModelForTokenClassification,
+                     tokenizer: AutoTokenizer,
+                     device: torch.device,
+                     id2label: dict):
+    """
+    Делает предсказание для одной строки.
+    Возвращает список кортежей (start_index, end_index, label).
+    """
+    # 1) ищем слова в строке
+    matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё0-9]+", sentence))
+    if not matches:
+        return []
 
-def predict_sentence(sentence: str, model, tokenizer, device: str) -> typing.List[typing.Tuple[int, str]]:
-    tokens = sentence.split()
-    inputs = tokenizer(tokens, return_tensors="pt", is_split_into_words=True, truncation=True).to(device)
-    outputs = model(**inputs).logits
-    predictions = torch.argmax(outputs, dim=-1).squeeze().tolist()
-    word_ids = inputs.word_ids()
-    labels = []
-    for word_idx in range(len(tokens)):
-        token_indices = [i for i, w_id in enumerate(word_ids) if w_id == word_idx]
-        if token_indices:
-            labels.append(LABELS[predictions[token_indices[0]]])
+    tokens = [m.group(0) for m in matches]
+    positions = [(m.start(), m.end()) for m in matches]
+
+    # 2) токенизация с привязкой к словам
+    tokenized = tokenizer(tokens,
+                          is_split_into_words=True,
+                          return_tensors="pt",
+                          truncation=True)
+
+    input_ids = tokenized["input_ids"].to(device)
+    attention_mask = tokenized.get("attention_mask")
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+
+    # 3) предсказание модели
+    with torch.no_grad():
+        if attention_mask is not None:
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
         else:
-            labels.append("O")
-    annotation = [(i, lab) for i, lab in enumerate(labels)]
+            outputs = model(input_ids=input_ids)
+        logits = outputs.logits
+        preds = torch.argmax(logits, dim=-1).squeeze(0).cpu().tolist()
+
+    # 4) маппинг токенов к словам
+    word_ids = tokenized.word_ids(batch_index=0)
+
+    annotation = []
+    for word_idx, (start_char, end_char) in enumerate(positions):
+        space_pos = sentence.find(" ", end_char)
+        if space_pos != -1:
+            end_index = space_pos
+        else:
+            end_index = end_char
+
+        token_indices = [i for i, w in enumerate(word_ids) if w == word_idx]
+        if token_indices:
+            pred_label_idx = preds[token_indices[0]]
+            label = id2label[pred_label_idx]
+        else:
+            label = "O"
+
+        annotation.append((start_char, end_index, label))
+
     return annotation
 
 
-def predict(sentence: str) -> typing.List[typing.Tuple[int, str]]:
-    model_path = config.BASE_MODEL_PATH
-    device = config.BASE_DEVICE
-    return predict.predict_sentence(
-        sentence=sentence,
-        model=AutoModelForTokenClassification.from_pretrained(model_path).to(device),
-        tokenizer=AutoTokenizer.from_pretrained(model_path),
-        device=device
-        )
-
-
-def run_inference(model_path="model", submission_path="data/submission.csv", output_path="data/submission_with_preds.csv"):
+def run_inference(model_path: str = "model",
+                  submission_path: str = "data/submission.csv",
+                  output_path: str = "data/submission_with_preds.csv"):
+    """
+    Загружает модель/токенайзер, прогоняет все строки из submission.csv (колонка 'sample')
+    и сохраняет файл с колонками sample, annotation.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # загрузка модели и токенайзера
+    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
     model = AutoModelForTokenClassification.from_pretrained(model_path).to(device)
-    df = pd.read_csv(submission_path)
+    model.eval()
+
+    # достаем словари меток из модели
+    id2label = model.config.id2label
+
+    # читаем submission
+    try:
+        df = pd.read_csv(submission_path, sep=None, engine="python")
+    except Exception:
+        df = pd.read_csv(submission_path, sep=";", engine="python")
+
+    if "sample" not in df.columns:
+        raise ValueError("В submission.csv ожидается колонка 'sample'.")
+
     preds = []
-    for sample in df["sample"].tolist():
-        ann = predict_sentence(sample, model, tokenizer, device)
+    for sample in df["sample"].astype(str).tolist():
+        ann = predict_sentence(sample, model, tokenizer, device, id2label)
         preds.append(str(ann))
+
     df["annotation"] = preds
     df.to_csv(output_path, index=False)
-    print(f"Saved predictions to {output_path}")
+    print(f"✅ Predictions saved to {output_path}")
+
 
 if __name__ == "__main__":
     run_inference()

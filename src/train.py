@@ -1,91 +1,166 @@
+import os
+import re
+import ast
 import argparse
 import pandas as pd
 from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForTokenClassification, TrainingArguments, Trainer, DataCollatorForTokenClassification
+from sklearn.model_selection import train_test_split
+from .predict import run_inference
+
 import torch
-from seqeval.metrics import classification_report, f1_score
-from .preprocess import load_csv, dataset_to_token_labels
+from transformers import (
+    AutoTokenizer,
+    AutoModelForTokenClassification,
+    DataCollatorForTokenClassification,
+    TrainingArguments,
+    Trainer,
+)
 
-LABELS = ["O", "B-TYPE", "I-TYPE", "B-BRAND", "I-BRAND", "B-VOLUME", "I-VOLUME", "B-PERCENT", "I-PERCENT"]
+# =========================
+# Разбор аннотаций
+# =========================
+def parse_annotation(annotation_str):
+    try:
+        ann = ast.literal_eval(annotation_str)
+        return [(int(s), int(e), str(l)) for s, e, l in ann]
+    except Exception:
+        return []
 
-def tokenize_and_align_labels(examples, tokenizer, label_all_tokens=True):
-    tokenized_inputs = tokenizer(examples["tokens"], truncation=True, is_split_into_words=True)
-    labels = []
-    for i, label in enumerate(examples["labels"]):
-        word_ids = tokenized_inputs.word_ids(batch_index=i)
+# =========================
+# Токенизация с выравниванием лейблов
+# =========================
+def tokenize_and_align_labels(examples, tokenizer, label2id):
+    tokenized = tokenizer(
+        examples["tokens"],
+        is_split_into_words=True,
+        truncation=True,
+        max_length=128,
+    )
+
+    aligned_labels = []
+    for i, labels in enumerate(examples["labels"]):
+        word_ids = tokenized.word_ids(batch_index=i)
+        prev_word_idx = None
         label_ids = []
-        previous_word_idx = None
         for word_idx in word_ids:
             if word_idx is None:
                 label_ids.append(-100)
-            elif word_idx != previous_word_idx:
-                label_ids.append(LABELS.index(label[word_idx]))
+            elif word_idx != prev_word_idx:
+                label_ids.append(label2id[labels[word_idx]])
             else:
-                label_ids.append(LABELS.index(label[word_idx]) if label_all_tokens else -100)
-            previous_word_idx = word_idx
-        labels.append(label_ids)
-    tokenized_inputs["labels"] = labels
-    return tokenized_inputs
+                label_ids.append(label2id[labels[word_idx]])
+            prev_word_idx = word_idx
+        aligned_labels.append(label_ids)
 
-def compute_metrics(p):
-    predictions, labels = p
-    predictions = predictions.argmax(axis=-1)
-    true_labels = [[LABELS[l] for l in label if l != -100] for label in labels]
-    true_predictions = [
-        [LABELS[p] for (p, l) in zip(pred, lab) if l != -100]
-        for pred, lab in zip(predictions, labels)
-    ]
-    return {"f1": f1_score(true_labels, true_predictions), "report": classification_report(true_labels, true_predictions)}
+    tokenized["labels"] = aligned_labels
+    return tokenized
 
+# =========================
+# Загрузка датасета
+# =========================
+def load_dataset(path):
+    df = pd.read_csv(path, sep=";")
+
+    # Парсим аннотации
+    df["parsed"] = df["annotation"].apply(parse_annotation)
+
+    tokens_list, labels_list = [], []
+    for _, row in df.iterrows():
+        text = str(row["sample"])
+        anns = row["parsed"]
+
+        tokens = re.findall(r"\S+", text)
+        labels = ["O"] * len(tokens)
+
+        for (s, e, lab) in anns:
+            substring = text[s:e]
+            for i, tok in enumerate(tokens):
+                if substring in tok:
+                    labels[i] = lab
+
+        tokens_list.append(tokens)
+        labels_list.append(labels)
+
+    df["tokens"] = tokens_list
+    df["labels"] = labels_list
+
+    dataset = Dataset.from_pandas(df[["tokens", "labels"]])
+    return dataset
+
+# =========================
+# Основной процесс
+# =========================
 def main(args):
-    df = load_csv(args.data_path)
-    items = dataset_to_token_labels(df)
-    dataset = Dataset.from_list(items)
-    ds = DatasetDict({"train": dataset})
+    # print("📂 Загружаем датасет...")
+    # dataset = load_dataset(args.data_path)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    tokenized_train = ds["train"].map(lambda x: tokenize_and_align_labels(x, tokenizer), batched=True)
+    # # train/val split
+    # train_test = dataset.train_test_split(test_size=0.1, seed=42)
+    # ds = DatasetDict({
+    #     "train": train_test["train"],
+    #     "validation": train_test["test"]
+    # })
 
-    model = AutoModelForTokenClassification.from_pretrained(args.model_name, num_labels=len(LABELS))
+    # # собираем словарь меток
+    # unique_labels = set(l for sublist in dataset["labels"] for l in sublist)
+    # label2id = {label: i for i, label in enumerate(sorted(unique_labels))}
+    # id2label = {i: label for label, i in label2id.items()}
 
-    training_args = TrainingArguments(
-        output_dir="./results",
-        num_train_epochs=3,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        warmup_steps=500,
-        weight_decay=0.01,
-        logging_dir="./logs",
-        eval_strategy="no",
-        save_strategy="epoch",
-        load_best_model_at_end=False,
-        logging_steps=100,
-        save_total_limit=2,
-        metric_for_best_model="f1",
-    )
+    # print("📝 Метки:", label2id)
 
-    data_collator = DataCollatorForTokenClassification(tokenizer)
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_train,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics,
-    )
+    # tokenizer = AutoTokenizer.from_pretrained("DeepPavlov/rubert-base-cased")
 
-    trainer.train()
-    model.save_pretrained(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    # def preprocess(batch):
+    #     return tokenize_and_align_labels(batch, tokenizer, label2id)
 
-    # run prediction on submission.csv
-    from predict import run_inference
-    run_inference(model_path=args.output_dir, submission_path="data/submission.csv", output_path="data/submission_with_preds.csv")
+    # tokenized_ds = ds.map(preprocess, batched=True)
 
+    # model = AutoModelForTokenClassification.from_pretrained(
+    #     "DeepPavlov/rubert-base-cased",
+    #     num_labels=len(label2id),
+    #     id2label=id2label,
+    #     label2id=label2id,
+    # )
+
+    # data_collator = DataCollatorForTokenClassification(tokenizer)
+
+    # training_args = TrainingArguments(
+    #     output_dir=args.output_dir,
+    #     eval_strategy="epoch",
+    #     save_strategy="epoch",
+    #     learning_rate=2e-5,
+    #     per_device_train_batch_size=16,
+    #     per_device_eval_batch_size=16,
+    #     num_train_epochs=3,
+    #     weight_decay=0.01,
+    #     logging_dir="./logs",
+    #     logging_steps=50,
+    # )
+
+    # trainer = Trainer(
+    #     model=model,
+    #     args=training_args,
+    #     train_dataset=tokenized_ds["train"],
+    #     eval_dataset=tokenized_ds["validation"],
+    #     tokenizer=tokenizer,
+    #     data_collator=data_collator,
+    # )
+
+    # print("🚀 Начинаем обучение...")
+    # trainer.train()
+
+    # model.save_pretrained(args.output_dir)
+    # tokenizer.save_pretrained(args.output_dir)
+    # print(f"✅ Модель сохранена в {args.output_dir}")
+
+    run_inference()
+
+# =========================
+# Точка входа
+# =========================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default="data/train.csv")
-    parser.add_argument("--output_dir", type=str, default="model")
-    parser.add_argument("--model_name", type=str, default="DeepPavlov/rubert-base-cased")
+    parser.add_argument("--output_dir", type=str, default="./model")
     args = parser.parse_args()
     main(args)
