@@ -91,67 +91,67 @@ def load_dataset(path):
 # Основной процесс
 # =========================
 def main(args):
-    # print("📂 Загружаем датасет...")
-    # dataset = load_dataset(args.data_path)
+    print("📂 Загружаем датасет...")
+    dataset = load_dataset(args.data_path)
 
-    # # train/val split
-    # train_test = dataset.train_test_split(test_size=0.1, seed=42)
-    # ds = DatasetDict({
-    #     "train": train_test["train"],
-    #     "validation": train_test["test"]
-    # })
+    # train/val split
+    train_test = dataset.train_test_split(test_size=0.1, seed=42)
+    ds = DatasetDict({
+        "train": train_test["train"],
+        "validation": train_test["test"]
+    })
 
-    # # собираем словарь меток
-    # unique_labels = set(l for sublist in dataset["labels"] for l in sublist)
-    # label2id = {label: i for i, label in enumerate(sorted(unique_labels))}
-    # id2label = {i: label for label, i in label2id.items()}
+    # собираем словарь меток
+    unique_labels = set(l for sublist in dataset["labels"] for l in sublist)
+    label2id = {label: i for i, label in enumerate(sorted(unique_labels))}
+    id2label = {i: label for label, i in label2id.items()}
 
-    # print("📝 Метки:", label2id)
+    print("📝 Метки:", label2id)
 
-    # tokenizer = AutoTokenizer.from_pretrained("DeepPavlov/rubert-base-cased")
+    tokenizer = AutoTokenizer.from_pretrained("DeepPavlov/rubert-base-cased")
 
-    # def preprocess(batch):
-    #     return tokenize_and_align_labels(batch, tokenizer, label2id)
+    def preprocess(batch):
+        return tokenize_and_align_labels(batch, tokenizer, label2id)
 
-    # tokenized_ds = ds.map(preprocess, batched=True)
+    tokenized_ds = ds.map(preprocess, batched=True)
 
-    # model = AutoModelForTokenClassification.from_pretrained(
-    #     "DeepPavlov/rubert-base-cased",
-    #     num_labels=len(label2id),
-    #     id2label=id2label,
-    #     label2id=label2id,
-    # )
+    model = AutoModelForTokenClassification.from_pretrained(
+        "DeepPavlov/rubert-base-cased",
+        num_labels=len(label2id),
+        id2label=id2label,
+        label2id=label2id,
+    )
 
-    # data_collator = DataCollatorForTokenClassification(tokenizer)
+    data_collator = DataCollatorForTokenClassification(tokenizer)
 
-    # training_args = TrainingArguments(
-    #     output_dir=args.output_dir,
-    #     eval_strategy="epoch",
-    #     save_strategy="epoch",
-    #     learning_rate=2e-5,
-    #     per_device_train_batch_size=16,
-    #     per_device_eval_batch_size=16,
-    #     num_train_epochs=3,
-    #     weight_decay=0.01,
-    #     logging_dir="./logs",
-    #     logging_steps=50,
-    # )
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=2e-5,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
+        num_train_epochs=3,
+        weight_decay=0.01,
+        logging_dir="./logs",
+        logging_steps=50,
+    )
 
-    # trainer = Trainer(
-    #     model=model,
-    #     args=training_args,
-    #     train_dataset=tokenized_ds["train"],
-    #     eval_dataset=tokenized_ds["validation"],
-    #     tokenizer=tokenizer,
-    #     data_collator=data_collator,
-    # )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_ds["train"],
+        eval_dataset=tokenized_ds["validation"],
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+    )
 
-    # print("🚀 Начинаем обучение...")
-    # trainer.train()
+    print("🚀 Начинаем обучение...")
+    trainer.train()
 
-    # model.save_pretrained(args.output_dir)
-    # tokenizer.save_pretrained(args.output_dir)
-    # print(f"✅ Модель сохранена в {args.output_dir}")
+    model.save_pretrained(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
+    print(f"✅ Модель сохранена в {args.output_dir}")
 
     run_inference()
 
